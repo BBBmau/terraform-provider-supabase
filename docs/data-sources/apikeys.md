@@ -39,7 +39,3 @@ Read-Only:
 
 - `api_key` (String, Sensitive) The secret API key value
 - `name` (String) Name of the secret key
-
-## Secret values in state
-
-Key values read by this data source are stored in Terraform state. Prefer the [`supabase_apikey` ephemeral resource](../ephemeral-resources/apikey.md) when a secret key is needed during plan or apply and should not be written to state.
