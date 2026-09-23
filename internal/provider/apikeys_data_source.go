@@ -45,10 +45,7 @@ func (d *APIKeysDataSource) Schema(ctx context.Context, req datasource.SchemaReq
 		MarkdownDescription: "API Keys data source",
 
 		Attributes: map[string]schema.Attribute{
-			"project_ref": schema.StringAttribute{
-				MarkdownDescription: "Project reference ID",
-				Required:            true,
-			},
+			"project_ref": apiKeyProjectRefAttribute.dataSource(),
 			"anon_key": schema.StringAttribute{
 				MarkdownDescription: "Anonymous API key for the project",
 				Computed:            true,
@@ -70,15 +67,8 @@ func (d *APIKeysDataSource) Schema(ctx context.Context, req datasource.SchemaReq
 				Sensitive:           true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
-						"name": schema.StringAttribute{
-							MarkdownDescription: "Name of the secret key",
-							Computed:            true,
-						},
-						"api_key": schema.StringAttribute{
-							MarkdownDescription: "The secret API key value",
-							Computed:            true,
-							Sensitive:           true,
-						},
+						"name":    apiKeyNameAttribute.asComputed().withDescription(apiKeyDataSourceSecretNameDescription).dataSource(),
+						"api_key": apiKeyValueAttribute.withDescription(apiKeyDataSourceSecretValueDescription).dataSource(),
 					},
 				},
 			},
