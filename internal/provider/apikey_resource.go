@@ -430,69 +430,79 @@ func createApiKey(ctx context.Context, plan *ApiKeyResourceModel, client *api.Cl
 		return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
 	}
 
-	// 1. Check if default publishable key exist, create it if it doesn't
 	hasDefaultPublishable := false
-
 	if resp.JSON200 != nil {
 		for _, key := range *resp.JSON200 {
-			if key.Name == "default" {
-				if key.Type.IsSpecified() && !key.Type.IsNull() {
-					keyType := key.Type.MustGet()
-					if keyType == api.ApiKeyResponseTypePublishable {
-						hasDefaultPublishable = true
-					}
-				}
+			keyType, ok := specifiedAPIKeyType(key)
+			if ok && key.Name == "default" && keyType == api.ApiKeyResponseTypePublishable {
+				hasDefaultPublishable = true
 			}
 		}
 	}
-
 	if !hasDefaultPublishable {
-		httpRespDefaultPublishable, errDefaultPublishable := client.V1CreateProjectApiKeyWithResponse(ctx, plan.ProjectRef.ValueString(), &api.V1CreateProjectApiKeyParams{Reveal: reveal}, api.CreateApiKeyBody{
-			Name:              "default",
-			Type:              api.CreateApiKeyBodyTypePublishable,
-			Description:       nullable.Nullable[string]{},
-			SecretJwtTemplate: nullable.Nullable[map[string]interface{}]{},
-		})
-		if errDefaultPublishable != nil {
-			msg := fmt.Sprintf("Unable to create default publishable apiKey, got error: %s", errDefaultPublishable)
-			return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
-		}
-		if httpRespDefaultPublishable.JSON201 == nil {
-			msg := fmt.Sprintf("Unable to create default publishable apiKey, got status %d: %s", httpRespDefaultPublishable.StatusCode(), httpRespDefaultPublishable.Body)
-			return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
+		if diags := ensureDefaultPublishableAPIKey(ctx, plan.ProjectRef.ValueString(), client); diags.HasError() {
+			return diags
 		}
 	}
 
-	// 2. Create apiKey
-	httpResp, err := client.V1CreateProjectApiKeyWithResponse(ctx, plan.ProjectRef.ValueString(), &api.V1CreateProjectApiKeyParams{Reveal: reveal}, api.CreateApiKeyBody{
-		Name:              plan.Name.ValueString(),
-		Type:              api.CreateApiKeyBodyTypeSecret,
-		Description:       nullable.Nullable[string]{},
-		SecretJwtTemplate: nullable.NewNullableWithValue(map[string]interface{}{"role": "service_role"}),
-	})
+	if diags := createSecretAPIKey(ctx, plan, client); diags.HasError() {
+		return diags
+	}
+
+	return readApiKeyDatabase(ctx, plan, client)
+}
+
+func specifiedAPIKeyType(key api.ApiKeyResponse) (api.ApiKeyResponseType, bool) {
+	if !key.Type.IsSpecified() || key.Type.IsNull() {
+		return "", false
+	}
+	return key.Type.MustGet(), true
+}
+
+func apiKeyDescription(value types.String) nullable.Nullable[string] {
+	if value.IsNull() || value.IsUnknown() {
+		return nullable.Nullable[string]{}
+	}
+	return nullable.NewNullableWithValue(value.ValueString())
+}
+
+func createProjectAPIKey(ctx context.Context, client *api.ClientWithResponses, projectRef, what string, body api.CreateApiKeyBody) (*api.ApiKeyResponse, diag.Diagnostics) {
+	httpResp, err := client.V1CreateProjectApiKeyWithResponse(ctx, projectRef, &api.V1CreateProjectApiKeyParams{Reveal: Ptr(true)}, body)
 	if err != nil {
-		msg := fmt.Sprintf("Unable to create apiKey, got error: %s", err)
-		return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
+		msg := fmt.Sprintf("Unable to create %s, got error: %s", what, err)
+		return nil, diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
 	}
 	if httpResp.JSON201 == nil {
-		msg := fmt.Sprintf("Unable to create apiKey, got status %d: %s", httpResp.StatusCode(), httpResp.Body)
-		return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
+		msg := fmt.Sprintf("Unable to create %s, got status %d: %s", what, httpResp.StatusCode(), httpResp.Body)
+		return nil, diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
 	}
+	return httpResp.JSON201, nil
+}
 
-	// Update computed fields from creation response
-	plan.Id = NullableToString(httpResp.JSON201.Id)
-	plan.ApiKey = NullableToString(httpResp.JSON201.ApiKey)
-	plan.Type = NullableToString(httpResp.JSON201.Type)
+func ensureDefaultPublishableAPIKey(ctx context.Context, projectRef string, client *api.ClientWithResponses) diag.Diagnostics {
+	_, diags := createProjectAPIKey(ctx, client, projectRef, "default publishable apiKey", api.CreateApiKeyBody{
+		Name:              "default",
+		Type:              api.CreateApiKeyBodyTypePublishable,
+		Description:       nullable.Nullable[string]{},
+		SecretJwtTemplate: nullable.Nullable[map[string]interface{}]{},
+	})
+	return diags
+}
 
-	obj, diags := types.ObjectValue(secretJwtTemplateAttrTypes, map[string]attr.Value{
-		"role": types.StringValue("service_role"),
+func createSecretAPIKey(ctx context.Context, data *ApiKeyResourceModel, client *api.ClientWithResponses) diag.Diagnostics {
+	created, diags := createProjectAPIKey(ctx, client, data.ProjectRef.ValueString(), "apiKey", api.CreateApiKeyBody{
+		Name:              data.Name.ValueString(),
+		Type:              api.CreateApiKeyBodyTypeSecret,
+		Description:       apiKeyDescription(data.Description),
+		SecretJwtTemplate: nullable.NewNullableWithValue(map[string]interface{}{"role": "service_role"}),
 	})
 	if diags.HasError() {
 		return diags
 	}
-	plan.SecretJwtTemplate = obj
-
-	return readApiKeyDatabase(ctx, plan, client)
+	data.Id = NullableToString(created.Id)
+	data.ApiKey = NullableToString(created.ApiKey)
+	data.Type = NullableToString(created.Type)
+	return nil
 }
 
 func updateApiKey(ctx context.Context, plan *ApiKeyResourceModel, client *api.ClientWithResponses) diag.Diagnostics {
@@ -503,16 +513,9 @@ func updateApiKey(ctx context.Context, plan *ApiKeyResourceModel, client *api.Cl
 		secretJwtTemplate = nullable.Nullable[map[string]interface{}]{}
 	}
 
-	var description nullable.Nullable[string]
-	if plan.Description.IsNull() || plan.Description.IsUnknown() {
-		description = nullable.Nullable[string]{}
-	} else {
-		description = nullable.NewNullableWithValue(plan.Description.ValueString())
-	}
-
 	httpResp, err := client.V1UpdateProjectApiKeyWithResponse(ctx, plan.ProjectRef.ValueString(), uuid.MustParse(plan.Id.ValueString()), &api.V1UpdateProjectApiKeyParams{Reveal: Ptr(true)}, api.UpdateApiKeyBody{
 		Name:              plan.Name.ValueStringPointer(),
-		Description:       description,
+		Description:       apiKeyDescription(plan.Description),
 		SecretJwtTemplate: secretJwtTemplate,
 	})
 	if err != nil {

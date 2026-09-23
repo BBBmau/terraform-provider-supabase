@@ -199,55 +199,6 @@ func matchProjectAPIKeys(keys []api.ApiKeyResponse, name string) (match api.ApiK
 	return match, found, hasDefaultPublishable, nil
 }
 
-func specifiedAPIKeyType(key api.ApiKeyResponse) (api.ApiKeyResponseType, bool) {
-	if !key.Type.IsSpecified() || key.Type.IsNull() {
-		return "", false
-	}
-	return key.Type.MustGet(), true
-}
-
-func ensureDefaultPublishableAPIKey(ctx context.Context, projectRef string, client *api.ClientWithResponses) diag.Diagnostics {
-	reveal := Ptr(true)
-	httpResp, err := client.V1CreateProjectApiKeyWithResponse(ctx, projectRef, &api.V1CreateProjectApiKeyParams{Reveal: reveal}, api.CreateApiKeyBody{
-		Name:              "default",
-		Type:              api.CreateApiKeyBodyTypePublishable,
-		Description:       nullable.Nullable[string]{},
-		SecretJwtTemplate: nullable.Nullable[map[string]interface{}]{},
-	})
-	if err != nil {
-		msg := fmt.Sprintf("Unable to create default publishable apiKey, got error: %s", err)
-		return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
-	}
-	if httpResp.JSON201 == nil {
-		msg := fmt.Sprintf("Unable to create default publishable apiKey, got status %d: %s", httpResp.StatusCode(), httpResp.Body)
-		return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
-	}
-	return nil
-}
-
-func createSecretAPIKey(ctx context.Context, data *ApiKeyResourceModel, client *api.ClientWithResponses) diag.Diagnostics {
-	reveal := Ptr(true)
-	httpResp, err := client.V1CreateProjectApiKeyWithResponse(ctx, data.ProjectRef.ValueString(), &api.V1CreateProjectApiKeyParams{Reveal: reveal}, api.CreateApiKeyBody{
-		Name:              data.Name.ValueString(),
-		Type:              api.CreateApiKeyBodyTypeSecret,
-		Description:       apiKeyDescription(data.Description),
-		SecretJwtTemplate: nullable.NewNullableWithValue(map[string]interface{}{"role": "service_role"}),
-	})
-	if err != nil {
-		msg := fmt.Sprintf("Unable to create apiKey, got error: %s", err)
-		return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
-	}
-	if httpResp.JSON201 == nil {
-		msg := fmt.Sprintf("Unable to create apiKey, got status %d: %s", httpResp.StatusCode(), httpResp.Body)
-		return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
-	}
-
-	data.Id = NullableToString(httpResp.JSON201.Id)
-	data.ApiKey = NullableToString(httpResp.JSON201.ApiKey)
-	data.Type = NullableToString(httpResp.JSON201.Type)
-	return nil
-}
-
 func shouldUpdateAPIKeyDescription(desired types.String, current nullable.Nullable[string]) bool {
 	if desired.IsNull() || desired.IsUnknown() {
 		return false
@@ -256,13 +207,6 @@ func shouldUpdateAPIKeyDescription(desired types.String, current nullable.Nullab
 		return true
 	}
 	return current.MustGet() != desired.ValueString()
-}
-
-func apiKeyDescription(value types.String) nullable.Nullable[string] {
-	if value.IsNull() || value.IsUnknown() {
-		return nullable.Nullable[string]{}
-	}
-	return nullable.NewNullableWithValue(value.ValueString())
 }
 
 func requireAPIKeyID(id types.String) diag.Diagnostics {
