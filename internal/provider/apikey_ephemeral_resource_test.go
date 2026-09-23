@@ -1,0 +1,302 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
+package provider
+
+import (
+	"net/http"
+	"regexp"
+	"testing"
+
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-testing/echoprovider"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/statecheck"
+	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
+	"github.com/hashicorp/terraform-plugin-testing/tfversion"
+	"github.com/oapi-codegen/nullable"
+	"github.com/supabase/cli/pkg/api"
+	"github.com/supabase/terraform-provider-supabase/examples"
+	"gopkg.in/h2non/gock.v1"
+)
+
+const (
+	testAPIKeySecret = "sb_secret_eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+	testAPIKeyEcho   = `
+provider "echo" {
+  data = ephemeral.supabase_apikey.new.api_key
+}
+
+resource "echo" "test" {}
+`
+)
+
+const testAccApiKeyEphemeralInvalidName = `
+ephemeral "supabase_apikey" "new" {
+  project_ref = "` + testProjectRef + `"
+  name        = "Invalid-Name-123"
+}
+`
+
+func TestAccApiKeyEphemeralResource(t *testing.T) {
+	defer gock.OffAll()
+
+	secretKey := revealedAPIKeyResponse(testAPIKeySecret, "")
+
+	// Plan opens the resource and creates the key. Apply opens it again and
+	// reveals the key created during plan. The echo resource copies that
+	// ephemeral value into its own state so the test can observe it; the
+	// supabase ephemeral resource itself is not stored in state.
+	gock.New(defaultApiEndpoint).
+		Get(apiKeyApiPath).
+		Persist().
+		Reply(http.StatusOK).
+		JSON(secretKey)
+	gock.New(defaultApiEndpoint).
+		Get(apiKeysApiPath).
+		Reply(http.StatusOK).
+		JSON([]api.ApiKeyResponse{
+			{
+				Name:   "anon",
+				Type:   nullable.NewNullableWithValue(api.ApiKeyResponseTypeLegacy),
+				ApiKey: nullable.NewNullableWithValue("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.anon"),
+			},
+			{
+				Name:   "service_role",
+				Type:   nullable.NewNullableWithValue(api.ApiKeyResponseTypeLegacy),
+				ApiKey: nullable.NewNullableWithValue("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.service_role"),
+			},
+		})
+	gock.New(defaultApiEndpoint).
+		Post(apiKeysApiPath).
+		Reply(http.StatusCreated).
+		JSON(api.ApiKeyResponse{
+			Id:     nullable.NewNullableWithValue("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+			Name:   "default",
+			Type:   nullable.NewNullableWithValue(api.ApiKeyResponseTypePublishable),
+			ApiKey: nullable.NewNullableWithValue("sb_publishable_eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"),
+		})
+	gock.New(defaultApiEndpoint).
+		Post(apiKeysApiPath).
+		Reply(http.StatusCreated).
+		JSON(secretKey)
+	// Later opens, including the post-apply plan, reuse the key created above.
+	gock.New(defaultApiEndpoint).
+		Get(apiKeysApiPath).
+		Persist().
+		Reply(http.StatusOK).
+		JSON([]api.ApiKeyResponse{
+			{
+				Id:   nullable.NewNullableWithValue("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+				Name: "default",
+				Type: nullable.NewNullableWithValue(api.ApiKeyResponseTypePublishable),
+			},
+			secretKey,
+		})
+
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() { testAccPreCheck(t) },
+		TerraformVersionChecks: []tfversion.TerraformVersionCheck{
+			tfversion.SkipBelow(tfversion.Version1_10_0),
+		},
+		ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
+			"supabase": testAccProtoV6ProviderFactories["supabase"],
+			"echo":     echoprovider.NewProviderServer(),
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: examples.ApiKeyEphemeralResourceConfig + testAPIKeyEcho,
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("echo.test", tfjsonpath.New("data"), knownvalue.StringExact(testAPIKeySecret)),
+				},
+			},
+		},
+	})
+}
+
+func TestAccApiKeyEphemeralResource_InvalidName(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() { testAccPreCheck(t) },
+		TerraformVersionChecks: []tfversion.TerraformVersionCheck{
+			tfversion.SkipBelow(tfversion.Version1_10_0),
+		},
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      testAccApiKeyEphemeralInvalidName,
+				ExpectError: regexp.MustCompile(`Name must start with a lowercase letter or an underscore`),
+			},
+		},
+	})
+}
+
+func TestOpenAPIKey_CreatesWhenMissing(t *testing.T) {
+	client := mockAPIKeyClient(t)
+	defer gock.OffAll()
+
+	gock.New(defaultApiEndpoint).Get(apiKeysApiPath).Reply(http.StatusOK).JSON([]api.ApiKeyResponse{})
+	gock.New(defaultApiEndpoint).Post(apiKeysApiPath).Reply(http.StatusCreated).JSON(api.ApiKeyResponse{
+		Id:   nullable.NewNullableWithValue("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+		Name: "default",
+		Type: nullable.NewNullableWithValue(api.ApiKeyResponseTypePublishable),
+	})
+	gock.New(defaultApiEndpoint).Post(apiKeysApiPath).Reply(http.StatusCreated).JSON(revealedAPIKeyResponse(testAPIKeySecret, ""))
+	gock.New(defaultApiEndpoint).Get(apiKeyApiPath).Reply(http.StatusOK).JSON(revealedAPIKeyResponse(testAPIKeySecret, "created"))
+
+	data := ApiKeyResourceModel{
+		ProjectRef:  types.StringValue(testProjectRef),
+		Name:        types.StringValue("test"),
+		Description: types.StringValue("created"),
+	}
+	if diags := openAPIKey(t.Context(), &data, client); diags.HasError() {
+		t.Fatalf("open api key: %v", diags)
+	}
+	if data.Id.ValueString() != testApiKeyUUID {
+		t.Errorf("id %q, want %q", data.Id.ValueString(), testApiKeyUUID)
+	}
+	if data.ApiKey.ValueString() != testAPIKeySecret {
+		t.Errorf("api_key %q, want %q", data.ApiKey.ValueString(), testAPIKeySecret)
+	}
+	if data.Description.ValueString() != "created" {
+		t.Errorf("description %q, want created", data.Description.ValueString())
+	}
+	assertAPIKeyRole(t, data, "service_role")
+	if !gock.IsDone() {
+		t.Errorf("pending mocks: %+v", gock.Pending())
+	}
+}
+
+func TestOpenAPIKey_RevealsExisting(t *testing.T) {
+	client := mockAPIKeyClient(t)
+	defer gock.OffAll()
+
+	gock.New(defaultApiEndpoint).Get(apiKeysApiPath).Reply(http.StatusOK).JSON([]api.ApiKeyResponse{
+		{
+			Id:   nullable.NewNullableWithValue("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+			Name: "default",
+			Type: nullable.NewNullableWithValue(api.ApiKeyResponseTypePublishable),
+		},
+		revealedAPIKeyResponse(testAPIKeySecret, "kept"),
+	})
+	gock.New(defaultApiEndpoint).Get(apiKeyApiPath).Reply(http.StatusOK).JSON(revealedAPIKeyResponse(testAPIKeySecret, "kept"))
+
+	data := ApiKeyResourceModel{
+		ProjectRef:  types.StringValue(testProjectRef),
+		Name:        types.StringValue("test"),
+		Description: types.StringNull(),
+	}
+	if diags := openAPIKey(t.Context(), &data, client); diags.HasError() {
+		t.Fatalf("open api key: %v", diags)
+	}
+	if data.ApiKey.ValueString() != testAPIKeySecret {
+		t.Errorf("api_key %q, want %q", data.ApiKey.ValueString(), testAPIKeySecret)
+	}
+	if data.Description.ValueString() != "kept" {
+		t.Errorf("description %q, want kept", data.Description.ValueString())
+	}
+	if !gock.IsDone() {
+		t.Errorf("pending mocks: %+v", gock.Pending())
+	}
+}
+
+func TestOpenAPIKey_UpdatesDescription(t *testing.T) {
+	client := mockAPIKeyClient(t)
+	defer gock.OffAll()
+
+	gock.New(defaultApiEndpoint).Get(apiKeysApiPath).Reply(http.StatusOK).JSON([]api.ApiKeyResponse{
+		{
+			Id:   nullable.NewNullableWithValue("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+			Name: "default",
+			Type: nullable.NewNullableWithValue(api.ApiKeyResponseTypePublishable),
+		},
+		revealedAPIKeyResponse(testAPIKeySecret, "old"),
+	})
+	gock.New(defaultApiEndpoint).
+		Patch(apiKeyApiPath).
+		Reply(http.StatusOK).
+		JSON(revealedAPIKeyResponse(testAPIKeySecret, "rotated"))
+	gock.New(defaultApiEndpoint).Get(apiKeyApiPath).Reply(http.StatusOK).JSON(revealedAPIKeyResponse(testAPIKeySecret, "rotated"))
+
+	data := ApiKeyResourceModel{
+		ProjectRef:  types.StringValue(testProjectRef),
+		Name:        types.StringValue("test"),
+		Description: types.StringValue("rotated"),
+	}
+	if diags := openAPIKey(t.Context(), &data, client); diags.HasError() {
+		t.Fatalf("open api key: %v", diags)
+	}
+	if data.Description.ValueString() != "rotated" {
+		t.Errorf("description %q, want rotated", data.Description.ValueString())
+	}
+	if data.ApiKey.ValueString() != testAPIKeySecret {
+		t.Errorf("api_key %q, want %q", data.ApiKey.ValueString(), testAPIKeySecret)
+	}
+	if !gock.IsDone() {
+		t.Errorf("pending mocks: %+v", gock.Pending())
+	}
+}
+
+func TestOpenAPIKey_AmbiguousName(t *testing.T) {
+	client := mockAPIKeyClient(t)
+	defer gock.OffAll()
+
+	gock.New(defaultApiEndpoint).Get(apiKeysApiPath).Reply(http.StatusOK).JSON([]api.ApiKeyResponse{
+		revealedAPIKeyResponse(testAPIKeySecret, ""),
+		{
+			Id:   nullable.NewNullableWithValue("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+			Name: "test",
+			Type: nullable.NewNullableWithValue(api.ApiKeyResponseTypeSecret),
+		},
+	})
+
+	data := ApiKeyResourceModel{
+		ProjectRef:  types.StringValue(testProjectRef),
+		Name:        types.StringValue("test"),
+		Description: types.StringNull(),
+	}
+	diags := openAPIKey(t.Context(), &data, client)
+	if !diags.HasError() || diags[0].Summary() != "Ambiguous API Key" {
+		t.Fatalf("expected ambiguous API key error, got %v", diags)
+	}
+}
+
+func mockAPIKeyClient(t *testing.T) *api.ClientWithResponses {
+	t.Helper()
+	gock.InterceptClient(http.DefaultClient)
+	t.Cleanup(func() { gock.RestoreClient(http.DefaultClient) })
+
+	client, err := api.NewClientWithResponses(defaultApiEndpoint)
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	return client
+}
+
+func revealedAPIKeyResponse(secret, description string) api.ApiKeyResponse {
+	resp := api.ApiKeyResponse{
+		Id:     nullable.NewNullableWithValue(testApiKeyUUID),
+		Name:   "test",
+		Type:   nullable.NewNullableWithValue(api.ApiKeyResponseTypeSecret),
+		ApiKey: nullable.NewNullableWithValue(secret),
+		SecretJwtTemplate: nullable.NewNullableWithValue(map[string]interface{}{
+			"role": "service_role",
+		}),
+	}
+	if description != "" {
+		resp.Description = nullable.NewNullableWithValue(description)
+	}
+	return resp
+}
+
+func assertAPIKeyRole(t *testing.T, data ApiKeyResourceModel, want string) {
+	t.Helper()
+	role, ok := data.SecretJwtTemplate.Attributes()["role"].(types.String)
+	if !ok {
+		t.Fatalf("role attribute has type %T", data.SecretJwtTemplate.Attributes()["role"])
+	}
+	if role.ValueString() != want {
+		t.Errorf("role %q, want %q", role.ValueString(), want)
+	}
+}
