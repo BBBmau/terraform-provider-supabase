@@ -161,7 +161,7 @@ func openAPIKey(ctx context.Context, data *ApiKeyResourceModel, client *api.Clie
 		data.Id = NullableToString(match.Id)
 		data.Type = NullableToString(match.Type)
 		if shouldUpdateAPIKeyDescription(data.Description, match.Description) {
-			return updateApiKey(ctx, data, client)
+			return updateAPIKeyDescription(ctx, data, client)
 		}
 	}
 
@@ -197,6 +197,25 @@ func matchProjectAPIKeys(keys []api.ApiKeyResponse, name string) (match api.ApiK
 		found = true
 	}
 	return match, found, hasDefaultPublishable, nil
+}
+
+// updateAPIKeyDescription changes only the description. The managed resource
+// update also writes the service-role JWT template, which would replace a
+// custom template on an existing secret key.
+func updateAPIKeyDescription(ctx context.Context, data *ApiKeyResourceModel, client *api.ClientWithResponses) diag.Diagnostics {
+	httpResp, err := client.V1UpdateProjectApiKeyWithResponse(ctx, data.ProjectRef.ValueString(), uuid.MustParse(data.Id.ValueString()), &api.V1UpdateProjectApiKeyParams{Reveal: Ptr(true)}, api.UpdateApiKeyBody{
+		Description: apiKeyDescription(data.Description),
+	})
+	if err != nil {
+		msg := fmt.Sprintf("Unable to update apiKey, got error: %s", err)
+		return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
+	}
+	if httpResp.JSON200 == nil {
+		msg := fmt.Sprintf("Unable to update apiKey, got status %d: %s", httpResp.StatusCode(), httpResp.Body)
+		return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
+	}
+
+	return readApiKeyDatabase(ctx, data, client)
 }
 
 func shouldUpdateAPIKeyDescription(desired types.String, current nullable.Nullable[string]) bool {

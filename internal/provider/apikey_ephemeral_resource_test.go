@@ -215,6 +215,7 @@ func TestOpenAPIKey_UpdatesDescription(t *testing.T) {
 	})
 	gock.New(defaultApiEndpoint).
 		Patch(apiKeyApiPath).
+		JSON(map[string]string{"description": "rotated"}).
 		Reply(http.StatusOK).
 		JSON(revealedAPIKeyResponse("rotated"))
 	gock.New(defaultApiEndpoint).Get(apiKeyApiPath).Reply(http.StatusOK).JSON(revealedAPIKeyResponse("rotated"))
