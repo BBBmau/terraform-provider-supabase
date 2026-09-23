@@ -45,6 +45,10 @@ Read-Only:
 
 - `role` (String) Role of the secret JWT template
 
+## Secret value in state
+
+`api_key` is stored in Terraform state. Prefer the [`supabase_apikey` ephemeral resource](../ephemeral-resources/apikey.md) so the secret is available during plan and apply without being written to state. Use this managed resource when Terraform should update or delete the key.
+
 ## Import
 
 Import is supported using the following syntax:
