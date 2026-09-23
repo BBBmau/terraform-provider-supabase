@@ -127,16 +127,38 @@ func (r *APIKeyEphemeralResource) Open(ctx context.Context, req ephemeral.OpenRe
 	resp.Diagnostics.Append(resp.Result.Set(ctx, &data)...)
 }
 
+// keyedLocker stores one mutex per key without a type assertion.
+type keyedLocker[K comparable] struct {
+	mu    sync.Mutex
+	locks map[K]*sync.Mutex
+}
+
+func (l *keyedLocker[K]) lock(key K) func() {
+	l.mu.Lock()
+	if l.locks == nil {
+		l.locks = make(map[K]*sync.Mutex)
+	}
+	entry := l.locks[key]
+	if entry == nil {
+		entry = &sync.Mutex{}
+		l.locks[key] = entry
+	}
+	l.mu.Unlock()
+
+	entry.Lock()
+	return entry.Unlock
+}
+
 // apiKeyOpenLocks serializes check-and-create for one project and name.
 // Concurrent opens can otherwise both miss the key and create duplicates,
 // which a later open rejects as ambiguous.
-var apiKeyOpenLocks sync.Map
+var apiKeyOpenLocks keyedLocker[apiKeyOpenKey]
 
 // apiKeyProjectLocks serializes creation of the default publishable key.
 // The name lock does not cover it: two opens with different secret names can
 // both observe that key missing. Take this lock only while holding the name
 // lock so the two cannot deadlock.
-var apiKeyProjectLocks sync.Map
+var apiKeyProjectLocks keyedLocker[string]
 
 type apiKeyOpenKey struct {
 	projectRef string
@@ -144,17 +166,11 @@ type apiKeyOpenKey struct {
 }
 
 func lockAPIKeyOpen(projectRef, name string) func() {
-	value, _ := apiKeyOpenLocks.LoadOrStore(apiKeyOpenKey{projectRef: projectRef, name: name}, &sync.Mutex{})
-	mu := value.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+	return apiKeyOpenLocks.lock(apiKeyOpenKey{projectRef: projectRef, name: name})
 }
 
 func lockAPIKeyProject(projectRef string) func() {
-	value, _ := apiKeyProjectLocks.LoadOrStore(projectRef, &sync.Mutex{})
-	mu := value.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+	return apiKeyProjectLocks.lock(projectRef)
 }
 
 // openAPIKey creates the secret key when this project does not already have
