@@ -7,16 +7,20 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/oapi-codegen/nullable"
@@ -78,15 +82,56 @@ func (d *APIKeyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 		MarkdownDescription: "API Key resource",
 
 		Attributes: map[string]schema.Attribute{
-			"id":          apiKeyIDAttribute.resource(stringplanmodifier.UseStateForUnknown()),
-			"project_ref": apiKeyProjectRefAttribute.resource(),
-			"name":        apiKeyNameAttribute.resource(),
-			"description": apiKeyDescriptionAttribute.resource(),
-			"type":        apiKeyTypeAttribute.resource(stringplanmodifier.UseStateForUnknown()),
-			"api_key":     apiKeyValueAttribute.resource(),
-			"secret_jwt_template": apiKeySecretJWTTemplateResource(
-				objectplanmodifier.UseStateForUnknown(),
-			),
+			"id": schema.StringAttribute{
+				MarkdownDescription: "API key identifier",
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"project_ref": schema.StringAttribute{
+				MarkdownDescription: "Project reference ID",
+				Required:            true,
+			},
+			"name": schema.StringAttribute{
+				MarkdownDescription: "Name of the API key",
+				Required:            true,
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(
+						regexp.MustCompile(`^[a-z_][a-z0-9_]*$`),
+						"Name must start with a lowercase letter or an underscore, followed only by lowercase alphanumeric characters or underscore",
+					),
+				},
+			},
+			"description": schema.StringAttribute{
+				MarkdownDescription: "Description of the API key",
+				Optional:            true,
+			},
+			"type": schema.StringAttribute{
+				MarkdownDescription: "Type of the API key",
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"api_key": schema.StringAttribute{
+				MarkdownDescription: "API key",
+				Computed:            true,
+				Sensitive:           true,
+			},
+			"secret_jwt_template": schema.SingleNestedAttribute{
+				MarkdownDescription: "Secret JWT template",
+				Computed:            true,
+				PlanModifiers: []planmodifier.Object{
+					objectplanmodifier.UseStateForUnknown(),
+				},
+				Attributes: map[string]schema.Attribute{
+					"role": schema.StringAttribute{
+						MarkdownDescription: "Role of the secret JWT template",
+						Computed:            true,
+					},
+				},
+			},
 		},
 	}
 }
@@ -343,18 +388,28 @@ func readApiKeyDatabase(ctx context.Context, state *ApiKeyResourceModel, client 
 		Description: descriptionValue,
 	}
 
-	role := types.StringNull()
+	var secretJwtTemplate types.Object
 	if httpResp.JSON200.SecretJwtTemplate.IsSpecified() && !httpResp.JSON200.SecretJwtTemplate.IsNull() {
 		templateMap := httpResp.JSON200.SecretJwtTemplate.MustGet()
 		roleValue := ""
-		if roleFromTemplate, ok := templateMap["role"].(string); ok {
-			roleValue = roleFromTemplate
+		if role, ok := templateMap["role"].(string); ok {
+			roleValue = role
 		}
-		role = types.StringValue(roleValue)
-	}
-	secretJwtTemplate, templateDiags := secretJWTTemplateObject(role)
-	if templateDiags.HasError() {
-		return templateDiags
+		obj, diags := types.ObjectValue(secretJwtTemplateAttrTypes, map[string]attr.Value{
+			"role": types.StringValue(roleValue),
+		})
+		if diags.HasError() {
+			return diags
+		}
+		secretJwtTemplate = obj
+	} else {
+		obj, diags := types.ObjectValue(secretJwtTemplateAttrTypes, map[string]attr.Value{
+			"role": types.StringNull(),
+		})
+		if diags.HasError() {
+			return diags
+		}
+		secretJwtTemplate = obj
 	}
 
 	database.SecretJwtTemplate = secretJwtTemplate
@@ -380,15 +435,20 @@ func createApiKey(ctx context.Context, plan *ApiKeyResourceModel, client *api.Cl
 
 	if resp.JSON200 != nil {
 		for _, key := range *resp.JSON200 {
-			if apiKeyIsDefaultPublishable(key) {
-				hasDefaultPublishable = true
+			if key.Name == "default" {
+				if key.Type.IsSpecified() && !key.Type.IsNull() {
+					keyType := key.Type.MustGet()
+					if keyType == api.ApiKeyResponseTypePublishable {
+						hasDefaultPublishable = true
+					}
+				}
 			}
 		}
 	}
 
 	if !hasDefaultPublishable {
 		httpRespDefaultPublishable, errDefaultPublishable := client.V1CreateProjectApiKeyWithResponse(ctx, plan.ProjectRef.ValueString(), &api.V1CreateProjectApiKeyParams{Reveal: reveal}, api.CreateApiKeyBody{
-			Name:              apiKeyDefaultName,
+			Name:              "default",
 			Type:              api.CreateApiKeyBodyTypePublishable,
 			Description:       nullable.Nullable[string]{},
 			SecretJwtTemplate: nullable.Nullable[map[string]interface{}]{},
@@ -408,7 +468,7 @@ func createApiKey(ctx context.Context, plan *ApiKeyResourceModel, client *api.Cl
 		Name:              plan.Name.ValueString(),
 		Type:              api.CreateApiKeyBodyTypeSecret,
 		Description:       nullable.Nullable[string]{},
-		SecretJwtTemplate: nullable.NewNullableWithValue(serviceRoleJWTTemplate()),
+		SecretJwtTemplate: nullable.NewNullableWithValue(map[string]interface{}{"role": "service_role"}),
 	})
 	if err != nil {
 		msg := fmt.Sprintf("Unable to create apiKey, got error: %s", err)
@@ -424,7 +484,9 @@ func createApiKey(ctx context.Context, plan *ApiKeyResourceModel, client *api.Cl
 	plan.ApiKey = NullableToString(httpResp.JSON201.ApiKey)
 	plan.Type = NullableToString(httpResp.JSON201.Type)
 
-	obj, diags := secretJWTTemplateObject(types.StringValue(apiKeyServiceRole))
+	obj, diags := types.ObjectValue(secretJwtTemplateAttrTypes, map[string]attr.Value{
+		"role": types.StringValue("service_role"),
+	})
 	if diags.HasError() {
 		return diags
 	}
@@ -436,12 +498,17 @@ func createApiKey(ctx context.Context, plan *ApiKeyResourceModel, client *api.Cl
 func updateApiKey(ctx context.Context, plan *ApiKeyResourceModel, client *api.ClientWithResponses) diag.Diagnostics {
 	var secretJwtTemplate nullable.Nullable[map[string]interface{}]
 	if plan.Type.ValueString() == string(api.ApiKeyResponseTypeSecret) {
-		secretJwtTemplate = nullable.NewNullableWithValue(serviceRoleJWTTemplate())
+		secretJwtTemplate = nullable.NewNullableWithValue(map[string]interface{}{"role": "service_role"})
 	} else {
 		secretJwtTemplate = nullable.Nullable[map[string]interface{}]{}
 	}
 
-	description := apiKeyDescription(plan.Description)
+	var description nullable.Nullable[string]
+	if plan.Description.IsNull() || plan.Description.IsUnknown() {
+		description = nullable.Nullable[string]{}
+	} else {
+		description = nullable.NewNullableWithValue(plan.Description.ValueString())
+	}
 
 	httpResp, err := client.V1UpdateProjectApiKeyWithResponse(ctx, plan.ProjectRef.ValueString(), uuid.MustParse(plan.Id.ValueString()), &api.V1UpdateProjectApiKeyParams{Reveal: Ptr(true)}, api.UpdateApiKeyBody{
 		Name:              plan.Name.ValueStringPointer(),
