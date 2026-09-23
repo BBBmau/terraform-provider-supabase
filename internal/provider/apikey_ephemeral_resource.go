@@ -131,8 +131,7 @@ func (r *APIKeyEphemeralResource) Open(ctx context.Context, req ephemeral.OpenRe
 // The key is left in place after the operation so it can still authenticate
 // requests; ephemeral resources are not destroyed when removed from configuration.
 func openAPIKey(ctx context.Context, data *ApiKeyResourceModel, client *api.ClientWithResponses) diag.Diagnostics {
-	reveal := Ptr(true)
-	listResp, err := client.V1GetProjectApiKeysWithResponse(ctx, data.ProjectRef.ValueString(), &api.V1GetProjectApiKeysParams{Reveal: reveal})
+	listResp, err := client.V1GetProjectApiKeysWithResponse(ctx, data.ProjectRef.ValueString(), &api.V1GetProjectApiKeysParams{})
 	if err != nil {
 		msg := fmt.Sprintf("Unable to read api keys, got error: %s", err)
 		return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
@@ -160,13 +159,14 @@ func openAPIKey(ctx context.Context, data *ApiKeyResourceModel, client *api.Clie
 	} else {
 		data.Id = NullableToString(match.Id)
 		data.Type = NullableToString(match.Type)
-		if shouldUpdateAPIKeyDescription(data.Description, match.Description) {
-			return updateAPIKeyDescription(ctx, data, client)
-		}
 	}
 
 	if diags := requireAPIKeyID(data.Id); diags.HasError() {
 		return diags
+	}
+
+	if found && shouldUpdateAPIKeyDescription(data.Description, match.Description) {
+		return updateAPIKeyDescription(ctx, data, client)
 	}
 
 	return readApiKeyDatabase(ctx, data, client)

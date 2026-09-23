@@ -239,6 +239,30 @@ func TestOpenAPIKey_UpdatesDescription(t *testing.T) {
 	}
 }
 
+func TestOpenAPIKey_InvalidID(t *testing.T) {
+	client := mockAPIKeyClient(t)
+	defer gock.OffAll()
+
+	gock.New(defaultApiEndpoint).Get(apiKeysApiPath).Reply(http.StatusOK).JSON([]api.ApiKeyResponse{
+		{
+			Id:          nullable.NewNullableWithValue("not-a-uuid"),
+			Name:        "test",
+			Type:        nullable.NewNullableWithValue(api.ApiKeyResponseTypeSecret),
+			Description: nullable.NewNullableWithValue("old"),
+		},
+	})
+
+	data := ApiKeyResourceModel{
+		ProjectRef:  types.StringValue(testProjectRef),
+		Name:        types.StringValue("test"),
+		Description: types.StringValue("rotated"),
+	}
+	diags := openAPIKey(t.Context(), &data, client)
+	if !diags.HasError() {
+		t.Fatal("expected invalid id diagnostic")
+	}
+}
+
 func TestOpenAPIKey_AmbiguousName(t *testing.T) {
 	client := mockAPIKeyClient(t)
 	defer gock.OffAll()
