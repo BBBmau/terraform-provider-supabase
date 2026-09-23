@@ -245,6 +245,11 @@ func TestOpenAPIKey_InvalidID(t *testing.T) {
 
 	gock.New(defaultApiEndpoint).Get(apiKeysApiPath).Reply(http.StatusOK).JSON([]api.ApiKeyResponse{
 		{
+			Id:   nullable.NewNullableWithValue("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+			Name: "default",
+			Type: nullable.NewNullableWithValue(api.ApiKeyResponseTypePublishable),
+		},
+		{
 			Id:          nullable.NewNullableWithValue("not-a-uuid"),
 			Name:        "test",
 			Type:        nullable.NewNullableWithValue(api.ApiKeyResponseTypeSecret),
@@ -258,8 +263,11 @@ func TestOpenAPIKey_InvalidID(t *testing.T) {
 		Description: types.StringValue("rotated"),
 	}
 	diags := openAPIKey(t.Context(), &data, client)
-	if !diags.HasError() {
-		t.Fatal("expected invalid id diagnostic")
+	if !diags.HasError() || diags[0].Detail() != `API key id "not-a-uuid" is not a UUID.` {
+		t.Fatalf("expected invalid id diagnostic, got %v", diags)
+	}
+	if !gock.IsDone() {
+		t.Errorf("pending mocks: %+v", gock.Pending())
 	}
 }
 
