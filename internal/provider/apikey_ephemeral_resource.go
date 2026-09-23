@@ -155,9 +155,8 @@ func (l *keyedLocker[K]) lock(key K) func() {
 var apiKeyOpenLocks keyedLocker[apiKeyOpenKey]
 
 // apiKeyProjectLocks serializes creation of the default publishable key.
-// The name lock does not cover it: two opens with different secret names, or
-// a managed create alongside an ephemeral open, can both observe that key
-// missing. Never acquire the name lock while holding this one.
+// The name lock does not cover it: two opens with different secret names can
+// both observe that key missing. Never acquire the name lock while holding this one.
 var apiKeyProjectLocks keyedLocker[string]
 
 type apiKeyOpenKey struct {
@@ -324,5 +323,58 @@ func requireAPIKeyID(id types.String) diag.Diagnostics {
 	if _, err := uuid.Parse(id.ValueString()); err != nil {
 		return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", fmt.Sprintf("API key id %q is not a UUID.", id.ValueString()))}
 	}
+	return nil
+}
+
+func specifiedAPIKeyType(key api.ApiKeyResponse) (api.ApiKeyResponseType, bool) {
+	if !key.Type.IsSpecified() || key.Type.IsNull() {
+		return "", false
+	}
+	return key.Type.MustGet(), true
+}
+
+func apiKeyDescription(value types.String) nullable.Nullable[string] {
+	if value.IsNull() || value.IsUnknown() {
+		return nullable.Nullable[string]{}
+	}
+	return nullable.NewNullableWithValue(value.ValueString())
+}
+
+func createProjectAPIKey(ctx context.Context, client *api.ClientWithResponses, projectRef, what string, body api.CreateApiKeyBody) (*api.ApiKeyResponse, diag.Diagnostics) {
+	httpResp, err := client.V1CreateProjectApiKeyWithResponse(ctx, projectRef, &api.V1CreateProjectApiKeyParams{Reveal: Ptr(true)}, body)
+	if err != nil {
+		msg := fmt.Sprintf("Unable to create %s, got error: %s", what, err)
+		return nil, diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
+	}
+	if httpResp.JSON201 == nil {
+		msg := fmt.Sprintf("Unable to create %s, got status %d: %s", what, httpResp.StatusCode(), httpResp.Body)
+		return nil, diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
+	}
+	return httpResp.JSON201, nil
+}
+
+func ensureDefaultPublishableAPIKey(ctx context.Context, projectRef string, client *api.ClientWithResponses) diag.Diagnostics {
+	_, diags := createProjectAPIKey(ctx, client, projectRef, "default publishable apiKey", api.CreateApiKeyBody{
+		Name:              "default",
+		Type:              api.CreateApiKeyBodyTypePublishable,
+		Description:       nullable.Nullable[string]{},
+		SecretJwtTemplate: nullable.Nullable[map[string]interface{}]{},
+	})
+	return diags
+}
+
+func createSecretAPIKey(ctx context.Context, data *ApiKeyResourceModel, client *api.ClientWithResponses) diag.Diagnostics {
+	created, diags := createProjectAPIKey(ctx, client, data.ProjectRef.ValueString(), "apiKey", api.CreateApiKeyBody{
+		Name:              data.Name.ValueString(),
+		Type:              api.CreateApiKeyBodyTypeSecret,
+		Description:       apiKeyDescription(data.Description),
+		SecretJwtTemplate: nullable.NewNullableWithValue(map[string]interface{}{"role": "service_role"}),
+	})
+	if diags.HasError() {
+		return diags
+	}
+	data.Id = NullableToString(created.Id)
+	data.ApiKey = NullableToString(created.ApiKey)
+	data.Type = NullableToString(created.Type)
 	return nil
 }

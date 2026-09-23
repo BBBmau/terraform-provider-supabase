@@ -37,7 +37,6 @@ func TestAccApiKeyResource(t *testing.T) {
 	// Step 1: create
 	gock.New(defaultApiEndpoint).
 		Get(apiKeysApiPath).
-		Times(2).
 		Reply(http.StatusOK).
 		JSON([]api.ApiKeyResponse{
 			{
