@@ -43,7 +43,7 @@ ephemeral "supabase_apikey" "new" {
 func TestAccApiKeyEphemeralResource(t *testing.T) {
 	defer gock.OffAll()
 
-	secretKey := revealedAPIKeyResponse(testAPIKeySecret, "")
+	secretKey := revealedAPIKeyResponse("")
 
 	// Plan opens the resource and creates the key. Apply opens it again and
 	// reveals the key created during plan. The echo resource copies that
@@ -142,8 +142,8 @@ func TestOpenAPIKey_CreatesWhenMissing(t *testing.T) {
 		Name: "default",
 		Type: nullable.NewNullableWithValue(api.ApiKeyResponseTypePublishable),
 	})
-	gock.New(defaultApiEndpoint).Post(apiKeysApiPath).Reply(http.StatusCreated).JSON(revealedAPIKeyResponse(testAPIKeySecret, ""))
-	gock.New(defaultApiEndpoint).Get(apiKeyApiPath).Reply(http.StatusOK).JSON(revealedAPIKeyResponse(testAPIKeySecret, "created"))
+	gock.New(defaultApiEndpoint).Post(apiKeysApiPath).Reply(http.StatusCreated).JSON(revealedAPIKeyResponse(""))
+	gock.New(defaultApiEndpoint).Get(apiKeyApiPath).Reply(http.StatusOK).JSON(revealedAPIKeyResponse("created"))
 
 	data := ApiKeyResourceModel{
 		ProjectRef:  types.StringValue(testProjectRef),
@@ -178,9 +178,9 @@ func TestOpenAPIKey_RevealsExisting(t *testing.T) {
 			Name: "default",
 			Type: nullable.NewNullableWithValue(api.ApiKeyResponseTypePublishable),
 		},
-		revealedAPIKeyResponse(testAPIKeySecret, "kept"),
+		revealedAPIKeyResponse("kept"),
 	})
-	gock.New(defaultApiEndpoint).Get(apiKeyApiPath).Reply(http.StatusOK).JSON(revealedAPIKeyResponse(testAPIKeySecret, "kept"))
+	gock.New(defaultApiEndpoint).Get(apiKeyApiPath).Reply(http.StatusOK).JSON(revealedAPIKeyResponse("kept"))
 
 	data := ApiKeyResourceModel{
 		ProjectRef:  types.StringValue(testProjectRef),
@@ -211,13 +211,13 @@ func TestOpenAPIKey_UpdatesDescription(t *testing.T) {
 			Name: "default",
 			Type: nullable.NewNullableWithValue(api.ApiKeyResponseTypePublishable),
 		},
-		revealedAPIKeyResponse(testAPIKeySecret, "old"),
+		revealedAPIKeyResponse("old"),
 	})
 	gock.New(defaultApiEndpoint).
 		Patch(apiKeyApiPath).
 		Reply(http.StatusOK).
-		JSON(revealedAPIKeyResponse(testAPIKeySecret, "rotated"))
-	gock.New(defaultApiEndpoint).Get(apiKeyApiPath).Reply(http.StatusOK).JSON(revealedAPIKeyResponse(testAPIKeySecret, "rotated"))
+		JSON(revealedAPIKeyResponse("rotated"))
+	gock.New(defaultApiEndpoint).Get(apiKeyApiPath).Reply(http.StatusOK).JSON(revealedAPIKeyResponse("rotated"))
 
 	data := ApiKeyResourceModel{
 		ProjectRef:  types.StringValue(testProjectRef),
@@ -243,7 +243,7 @@ func TestOpenAPIKey_AmbiguousName(t *testing.T) {
 	defer gock.OffAll()
 
 	gock.New(defaultApiEndpoint).Get(apiKeysApiPath).Reply(http.StatusOK).JSON([]api.ApiKeyResponse{
-		revealedAPIKeyResponse(testAPIKeySecret, ""),
+		revealedAPIKeyResponse(""),
 		{
 			Id:   nullable.NewNullableWithValue("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
 			Name: "test",
@@ -274,12 +274,12 @@ func mockAPIKeyClient(t *testing.T) *api.ClientWithResponses {
 	return client
 }
 
-func revealedAPIKeyResponse(secret, description string) api.ApiKeyResponse {
+func revealedAPIKeyResponse(description string) api.ApiKeyResponse {
 	resp := api.ApiKeyResponse{
 		Id:     nullable.NewNullableWithValue(testApiKeyUUID),
 		Name:   "test",
 		Type:   nullable.NewNullableWithValue(api.ApiKeyResponseTypeSecret),
-		ApiKey: nullable.NewNullableWithValue(secret),
+		ApiKey: nullable.NewNullableWithValue(testAPIKeySecret),
 		SecretJwtTemplate: nullable.NewNullableWithValue(map[string]interface{}{
 			"role": "service_role",
 		}),
