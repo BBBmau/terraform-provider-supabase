@@ -56,8 +56,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 1.7 is the oldest CLI this provider still runs on.
-        # 1.10 is required for ephemeral resources; older CLIs skip those tests.
+        # list whatever Terraform versions here you would like to support
         terraform:
           - '1.7.*'
           - '1.10.*'
