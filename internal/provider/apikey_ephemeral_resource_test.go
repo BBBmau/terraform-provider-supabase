@@ -57,6 +57,7 @@ func TestAccApiKeyEphemeralResource(t *testing.T) {
 		JSON(secretKey)
 	gock.New(defaultApiEndpoint).
 		Get(apiKeysApiPath).
+		Times(2).
 		Reply(http.StatusOK).
 		JSON([]api.ApiKeyResponse{
 			{
@@ -137,7 +138,7 @@ func TestOpenAPIKey_CreatesWhenMissing(t *testing.T) {
 	client := mockAPIKeyClient(t)
 	defer gock.OffAll()
 
-	gock.New(defaultApiEndpoint).Get(apiKeysApiPath).Reply(http.StatusOK).JSON([]api.ApiKeyResponse{})
+	gock.New(defaultApiEndpoint).Get(apiKeysApiPath).Times(2).Reply(http.StatusOK).JSON([]api.ApiKeyResponse{})
 	gock.New(defaultApiEndpoint).Post(apiKeysApiPath).Reply(http.StatusCreated).JSON(api.ApiKeyResponse{
 		Id:   nullable.NewNullableWithValue("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
 		Name: "default",
@@ -264,6 +265,37 @@ func TestLockAPIKeyOpen_SameNameWaits(t *testing.T) {
 	}
 }
 
+func TestOpenAPIKey_SkipsDefaultPublishableCreatedWhileWaiting(t *testing.T) {
+	client := mockAPIKeyClient(t)
+	defer gock.OffAll()
+
+	gock.New(defaultApiEndpoint).Get(apiKeysApiPath).Reply(http.StatusOK).JSON([]api.ApiKeyResponse{})
+	gock.New(defaultApiEndpoint).Get(apiKeysApiPath).Reply(http.StatusOK).JSON([]api.ApiKeyResponse{
+		{
+			Id:   nullable.NewNullableWithValue("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+			Name: "default",
+			Type: nullable.NewNullableWithValue(api.ApiKeyResponseTypePublishable),
+		},
+	})
+	gock.New(defaultApiEndpoint).Post(apiKeysApiPath).Reply(http.StatusCreated).JSON(revealedAPIKeyResponse(""))
+	gock.New(defaultApiEndpoint).Get(apiKeyApiPath).Reply(http.StatusOK).JSON(revealedAPIKeyResponse("created"))
+
+	data := ApiKeyResourceModel{
+		ProjectRef:  types.StringValue(testProjectRef),
+		Name:        types.StringValue("test"),
+		Description: types.StringValue("created"),
+	}
+	if diags := openAPIKey(t.Context(), &data, client); diags.HasError() {
+		t.Fatalf("open api key: %v", diags)
+	}
+	if data.ApiKey.ValueString() != testAPIKeySecret {
+		t.Errorf("api_key %q, want %q", data.ApiKey.ValueString(), testAPIKeySecret)
+	}
+	if !gock.IsDone() {
+		t.Errorf("pending mocks: %+v", gock.Pending())
+	}
+}
+
 func TestLockAPIKeyOpen_DifferentNames(t *testing.T) {
 	releaseFirst := lockAPIKeyOpen(testProjectRef, "one")
 	defer releaseFirst()
@@ -279,6 +311,30 @@ func TestLockAPIKeyOpen_DifferentNames(t *testing.T) {
 	case <-acquired:
 	case <-time.After(2 * time.Second):
 		t.Fatal("opens with different names shared a lock")
+	}
+}
+
+func TestLockAPIKeyProject_SameProjectWaits(t *testing.T) {
+	releaseFirst := lockAPIKeyProject(testProjectRef)
+	acquired := make(chan struct{})
+	go func() {
+		releaseSecond := lockAPIKeyProject(testProjectRef)
+		close(acquired)
+		releaseSecond()
+	}()
+
+	select {
+	case <-acquired:
+		releaseFirst()
+		t.Fatal("second open acquired the project lock while the first still held it")
+	case <-time.After(100 * time.Millisecond):
+	}
+	releaseFirst()
+
+	select {
+	case <-acquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second open did not acquire the project lock after the first released it")
 	}
 }
 

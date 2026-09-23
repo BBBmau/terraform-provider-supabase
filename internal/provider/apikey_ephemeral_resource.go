@@ -132,6 +132,12 @@ func (r *APIKeyEphemeralResource) Open(ctx context.Context, req ephemeral.OpenRe
 // which a later open rejects as ambiguous.
 var apiKeyOpenLocks sync.Map
 
+// apiKeyProjectLocks serializes creation of the default publishable key.
+// The name lock does not cover it: two opens with different secret names can
+// both observe that key missing. Take this lock only while holding the name
+// lock so the two cannot deadlock.
+var apiKeyProjectLocks sync.Map
+
 type apiKeyOpenKey struct {
 	projectRef string
 	name       string
@@ -139,6 +145,13 @@ type apiKeyOpenKey struct {
 
 func lockAPIKeyOpen(projectRef, name string) func() {
 	value, _ := apiKeyOpenLocks.LoadOrStore(apiKeyOpenKey{projectRef: projectRef, name: name}, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+func lockAPIKeyProject(projectRef string) func() {
+	value, _ := apiKeyProjectLocks.LoadOrStore(projectRef, &sync.Mutex{})
 	mu := value.(*sync.Mutex)
 	mu.Lock()
 	return mu.Unlock
@@ -152,23 +165,18 @@ func openAPIKey(ctx context.Context, data *ApiKeyResourceModel, client *api.Clie
 	unlock := lockAPIKeyOpen(data.ProjectRef.ValueString(), data.Name.ValueString())
 	defer unlock()
 
-	listResp, err := client.V1GetProjectApiKeysWithResponse(ctx, data.ProjectRef.ValueString(), &api.V1GetProjectApiKeysParams{})
-	if err != nil {
-		msg := fmt.Sprintf("Unable to read api keys, got error: %s", err)
-		return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
-	}
-	if listResp.JSON200 == nil {
-		msg := fmt.Sprintf("Unable to read api keys, got status %d: %s", listResp.StatusCode(), listResp.Body)
-		return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
+	keys, diags := listProjectAPIKeys(ctx, data.ProjectRef.ValueString(), client)
+	if diags.HasError() {
+		return diags
 	}
 
-	match, found, hasDefaultPublishable, diags := matchProjectAPIKeys(*listResp.JSON200, data.Name.ValueString())
+	match, found, hasDefaultPublishable, diags := matchProjectAPIKeys(keys, data.Name.ValueString())
 	if diags.HasError() {
 		return diags
 	}
 
 	if !hasDefaultPublishable {
-		if diags := ensureDefaultPublishableAPIKey(ctx, data.ProjectRef.ValueString(), client); diags.HasError() {
+		if diags := ensureDefaultPublishableAPIKeyOnce(ctx, data.ProjectRef.ValueString(), client); diags.HasError() {
 			return diags
 		}
 	}
@@ -193,14 +201,58 @@ func openAPIKey(ctx context.Context, data *ApiKeyResourceModel, client *api.Clie
 	return readApiKeyDatabase(ctx, data, client)
 }
 
+func listProjectAPIKeys(ctx context.Context, projectRef string, client *api.ClientWithResponses) ([]api.ApiKeyResponse, diag.Diagnostics) {
+	listResp, err := client.V1GetProjectApiKeysWithResponse(ctx, projectRef, &api.V1GetProjectApiKeysParams{})
+	if err != nil {
+		msg := fmt.Sprintf("Unable to read api keys, got error: %s", err)
+		return nil, diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
+	}
+	if listResp.JSON200 == nil {
+		msg := fmt.Sprintf("Unable to read api keys, got status %d: %s", listResp.StatusCode(), listResp.Body)
+		return nil, diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
+	}
+	return *listResp.JSON200, nil
+}
+
+// ensureDefaultPublishableAPIKeyOnce lists again under the project lock before
+// creating. Another open may have created the default key after this open's
+// first list and before it acquired the lock.
+func ensureDefaultPublishableAPIKeyOnce(ctx context.Context, projectRef string, client *api.ClientWithResponses) diag.Diagnostics {
+	unlock := lockAPIKeyProject(projectRef)
+	defer unlock()
+
+	keys, diags := listProjectAPIKeys(ctx, projectRef, client)
+	if diags.HasError() {
+		return diags
+	}
+	if hasDefaultPublishableKey(keys) {
+		return nil
+	}
+	return ensureDefaultPublishableAPIKey(ctx, projectRef, client)
+}
+
+func hasDefaultPublishableKey(keys []api.ApiKeyResponse) bool {
+	for _, key := range keys {
+		if isDefaultPublishableAPIKey(key) {
+			return true
+		}
+	}
+	return false
+}
+
+func isDefaultPublishableAPIKey(key api.ApiKeyResponse) bool {
+	keyType, ok := specifiedAPIKeyType(key)
+	return ok && key.Name == "default" && keyType == api.ApiKeyResponseTypePublishable
+}
+
 func matchProjectAPIKeys(keys []api.ApiKeyResponse, name string) (match api.ApiKeyResponse, found bool, hasDefaultPublishable bool, diags diag.Diagnostics) {
 	for _, key := range keys {
+		if isDefaultPublishableAPIKey(key) {
+			hasDefaultPublishable = true
+		}
 		keyType, ok := specifiedAPIKeyType(key)
 		if !ok {
 			continue
-		}
-		if key.Name == "default" && keyType == api.ApiKeyResponseTypePublishable {
-			hasDefaultPublishable = true
 		}
 		if key.Name != name || keyType != api.ApiKeyResponseTypeSecret {
 			continue
