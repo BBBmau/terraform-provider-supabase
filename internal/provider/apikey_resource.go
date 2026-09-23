@@ -16,7 +16,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/oapi-codegen/nullable"
@@ -78,11 +77,11 @@ func (d *APIKeyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 		MarkdownDescription: "API Key resource",
 
 		Attributes: map[string]schema.Attribute{
-			"id":          apiKeyIDAttribute.resource(stringplanmodifier.UseStateForUnknown()),
+			"id":          apiKeyIDAttribute.resource(),
 			"project_ref": apiKeyProjectRefAttribute.resource(),
 			"name":        apiKeyNameAttribute.resource(),
 			"description": apiKeyDescriptionAttribute.resource(),
-			"type":        apiKeyTypeAttribute.resource(stringplanmodifier.UseStateForUnknown()),
+			"type":        apiKeyTypeAttribute.resource(),
 			"api_key":     apiKeyValueAttribute.resource(),
 			"secret_jwt_template": apiKeySecretJWTTemplateResource(
 				objectplanmodifier.UseStateForUnknown(),

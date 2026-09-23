@@ -8,11 +8,10 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
-	dschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	rschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/oapi-codegen/nullable"
 	"github.com/supabase/cli/pkg/api"
@@ -39,94 +38,25 @@ const (
 
 var apiKeyNamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 
-// apiKeyStringAttribute is the shared definition of an API key schema field.
-// The managed resource and data source use different schema packages, so each
-// caller converts this value into the package it needs.
-type apiKeyStringAttribute struct {
-	markdownDescription string
-	required            bool
-	optional            bool
-	computed            bool
-	sensitive           bool
-	validateName        bool
-}
-
-func (a apiKeyStringAttribute) withDescription(description string) apiKeyStringAttribute {
-	a.markdownDescription = description
-	return a
-}
-
-func (a apiKeyStringAttribute) asComputed() apiKeyStringAttribute {
-	a.required = false
-	a.optional = false
-	a.computed = true
-	a.validateName = false
-	return a
-}
-
-func (a apiKeyStringAttribute) resource(mods ...planmodifier.String) rschema.StringAttribute {
-	return rschema.StringAttribute{
-		MarkdownDescription: a.markdownDescription,
-		Required:            a.required,
-		Optional:            a.optional,
-		Computed:            a.computed,
-		Sensitive:           a.sensitive,
-		Validators:          a.validators(),
-		PlanModifiers:       mods,
-	}
-}
-
-func (a apiKeyStringAttribute) dataSource() dschema.StringAttribute {
-	return dschema.StringAttribute{
-		MarkdownDescription: a.markdownDescription,
-		Required:            a.required,
-		Optional:            a.optional,
-		Computed:            a.computed,
-		Sensitive:           a.sensitive,
-		Validators:          a.validators(),
-	}
-}
-
-func (a apiKeyStringAttribute) validators() []validator.String {
-	if !a.validateName {
-		return nil
-	}
-	return []validator.String{
-		stringvalidator.RegexMatches(apiKeyNamePattern, apiKeyNameValidationMessage),
-	}
-}
-
 var (
-	apiKeyIDAttribute = apiKeyStringAttribute{
-		markdownDescription: apiKeyIDDescription,
-		computed:            true,
-	}
-	apiKeyProjectRefAttribute = apiKeyStringAttribute{
-		markdownDescription: apiKeyProjectRefDescription,
-		required:            true,
-	}
-	apiKeyNameAttribute = apiKeyStringAttribute{
-		markdownDescription: apiKeyNameDescription,
-		required:            true,
-		validateName:        true,
-	}
-	apiKeyDescriptionAttribute = apiKeyStringAttribute{
-		markdownDescription: apiKeyDescriptionDescription,
-		optional:            true,
-	}
-	apiKeyTypeAttribute = apiKeyStringAttribute{
-		markdownDescription: apiKeyTypeDescription,
-		computed:            true,
-	}
-	apiKeyValueAttribute = apiKeyStringAttribute{
-		markdownDescription: apiKeyValueDescription,
-		computed:            true,
-		sensitive:           true,
-	}
-	apiKeySecretJWTRoleAttribute = apiKeyStringAttribute{
-		markdownDescription: apiKeySecretJWTRoleDescription,
-		computed:            true,
-	}
+	apiKeyIDAttribute = newStringSchemaAttribute(apiKeyIDDescription).
+				withComputed().
+				withPlanModifiers(stringplanmodifier.UseStateForUnknown())
+	apiKeyProjectRefAttribute = newStringSchemaAttribute(apiKeyProjectRefDescription).
+					withRequired()
+	apiKeyNameAttribute = newStringSchemaAttribute(apiKeyNameDescription).
+				withRequired().
+				withValidators(stringvalidator.RegexMatches(apiKeyNamePattern, apiKeyNameValidationMessage))
+	apiKeyDescriptionAttribute = newStringSchemaAttribute(apiKeyDescriptionDescription).
+					withOptional()
+	apiKeyTypeAttribute = newStringSchemaAttribute(apiKeyTypeDescription).
+				withComputed().
+				withPlanModifiers(stringplanmodifier.UseStateForUnknown())
+	apiKeyValueAttribute = newStringSchemaAttribute(apiKeyValueDescription).
+				withComputed().
+				withSensitive()
+	apiKeySecretJWTRoleAttribute = newStringSchemaAttribute(apiKeySecretJWTRoleDescription).
+					withComputed()
 )
 
 func apiKeySecretJWTTemplateResource(mods ...planmodifier.Object) rschema.SingleNestedAttribute {
