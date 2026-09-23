@@ -45,7 +45,7 @@ generate-json:
 	@echo "  - Writing terraform schema to JSON"
 	@cd temp; export TF_CLI_CONFIG_FILE="$$PWD/local.tfrc" && \
 		terraform providers schema -json > schema.json && \
-		jq . schema.json > ../docs/schema.json	
+		jq '.provider_schemas["registry.terraform.io/supabase/supabase"].resource_schemas.supabase_project.block.attributes.legacy_api_keys_enabled.deprecation_message = "Deprecated. This field will be removed once the transition to publishable and secret keys is complete."' schema.json > ../docs/schema.json	
 
 	@echo "Cleaning up"
 	@rm -r temp

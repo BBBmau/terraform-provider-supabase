@@ -360,7 +360,8 @@
                 "description_kind": "markdown",
                 "deprecated": true,
                 "optional": true,
-                "computed": true
+                "computed": true,
+                "deprecation_message": "Deprecated. This field will be removed once the transition to publishable and secret keys is complete."
               },
               "name": {
                 "type": "string",
