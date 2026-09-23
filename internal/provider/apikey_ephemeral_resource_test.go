@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
@@ -236,6 +237,48 @@ func TestOpenAPIKey_UpdatesDescription(t *testing.T) {
 	}
 	if !gock.IsDone() {
 		t.Errorf("pending mocks: %+v", gock.Pending())
+	}
+}
+
+func TestLockAPIKeyOpen_SameNameWaits(t *testing.T) {
+	releaseFirst := lockAPIKeyOpen(testProjectRef, "test")
+	acquired := make(chan struct{})
+	go func() {
+		releaseSecond := lockAPIKeyOpen(testProjectRef, "test")
+		close(acquired)
+		releaseSecond()
+	}()
+
+	select {
+	case <-acquired:
+		releaseFirst()
+		t.Fatal("second open acquired the lock while the first still held it")
+	case <-time.After(100 * time.Millisecond):
+	}
+	releaseFirst()
+
+	select {
+	case <-acquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second open did not acquire the lock after the first released it")
+	}
+}
+
+func TestLockAPIKeyOpen_DifferentNames(t *testing.T) {
+	releaseFirst := lockAPIKeyOpen(testProjectRef, "one")
+	defer releaseFirst()
+
+	acquired := make(chan struct{})
+	go func() {
+		releaseSecond := lockAPIKeyOpen(testProjectRef, "two")
+		close(acquired)
+		releaseSecond()
+	}()
+
+	select {
+	case <-acquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("opens with different names shared a lock")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -126,11 +127,31 @@ func (r *APIKeyEphemeralResource) Open(ctx context.Context, req ephemeral.OpenRe
 	resp.Diagnostics.Append(resp.Result.Set(ctx, &data)...)
 }
 
+// apiKeyOpenLocks serializes check-and-create for one project and name.
+// Concurrent opens can otherwise both miss the key and create duplicates,
+// which a later open rejects as ambiguous.
+var apiKeyOpenLocks sync.Map
+
+type apiKeyOpenKey struct {
+	projectRef string
+	name       string
+}
+
+func lockAPIKeyOpen(projectRef, name string) func() {
+	value, _ := apiKeyOpenLocks.LoadOrStore(apiKeyOpenKey{projectRef: projectRef, name: name}, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 // openAPIKey creates the secret key when this project does not already have
 // one with the configured name, then reveals it. Later opens reuse that key.
 // The key is left in place after the operation so it can still authenticate
 // requests; ephemeral resources are not destroyed when removed from configuration.
 func openAPIKey(ctx context.Context, data *ApiKeyResourceModel, client *api.ClientWithResponses) diag.Diagnostics {
+	unlock := lockAPIKeyOpen(data.ProjectRef.ValueString(), data.Name.ValueString())
+	defer unlock()
+
 	listResp, err := client.V1GetProjectApiKeysWithResponse(ctx, data.ProjectRef.ValueString(), &api.V1GetProjectApiKeysParams{})
 	if err != nil {
 		msg := fmt.Sprintf("Unable to read api keys, got error: %s", err)
