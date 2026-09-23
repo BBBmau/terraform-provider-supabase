@@ -155,9 +155,9 @@ func (l *keyedLocker[K]) lock(key K) func() {
 var apiKeyOpenLocks keyedLocker[apiKeyOpenKey]
 
 // apiKeyProjectLocks serializes creation of the default publishable key.
-// The name lock does not cover it: two opens with different secret names can
-// both observe that key missing. Take this lock only while holding the name
-// lock so the two cannot deadlock.
+// The name lock does not cover it: two opens with different secret names, or
+// a managed create alongside an ephemeral open, can both observe that key
+// missing. Never acquire the name lock while holding this one.
 var apiKeyProjectLocks keyedLocker[string]
 
 type apiKeyOpenKey struct {

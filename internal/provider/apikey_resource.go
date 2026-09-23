@@ -430,17 +430,9 @@ func createApiKey(ctx context.Context, plan *ApiKeyResourceModel, client *api.Cl
 		return diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
 	}
 
-	hasDefaultPublishable := false
-	if resp.JSON200 != nil {
-		for _, key := range *resp.JSON200 {
-			keyType, ok := specifiedAPIKeyType(key)
-			if ok && key.Name == "default" && keyType == api.ApiKeyResponseTypePublishable {
-				hasDefaultPublishable = true
-			}
-		}
-	}
+	hasDefaultPublishable := resp.JSON200 != nil && hasDefaultPublishableKey(*resp.JSON200)
 	if !hasDefaultPublishable {
-		if diags := ensureDefaultPublishableAPIKey(ctx, plan.ProjectRef.ValueString(), client); diags.HasError() {
+		if diags := ensureDefaultPublishableAPIKeyOnce(ctx, plan.ProjectRef.ValueString(), client); diags.HasError() {
 			return diags
 		}
 	}
