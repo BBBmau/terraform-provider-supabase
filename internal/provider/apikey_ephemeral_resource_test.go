@@ -13,9 +13,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-testing/echoprovider"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
-	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
-	"github.com/hashicorp/terraform-plugin-testing/statecheck"
-	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 	"github.com/hashicorp/terraform-plugin-testing/tfversion"
 	"github.com/oapi-codegen/nullable"
 	"github.com/supabase/cli/pkg/api"
@@ -25,12 +22,12 @@ import (
 
 const (
 	testAPIKeySecret = "sb_secret_eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-	testAPIKeyEcho   = `
+	// Provider configuration is a valid ephemeral consumer. The key is not
+	// assigned to a managed resource, which would persist it in state.
+	testAPIKeyEcho = `
 provider "echo" {
   data = ephemeral.supabase_apikey.new.api_key
 }
-
-resource "echo" "test" {}
 `
 )
 
@@ -47,9 +44,8 @@ func TestAccApiKeyEphemeralResource(t *testing.T) {
 	secretKey := revealedAPIKeyResponse("")
 
 	// Plan opens the resource and creates the key. Apply opens it again and
-	// reveals the key created during plan. The echo resource copies that
-	// ephemeral value into its own state so the test can observe it; the
-	// supabase ephemeral resource itself is not stored in state.
+	// reveals the key created during plan. The echo provider configuration is
+	// what references the key; the secret is not written to managed state.
 	gock.New(defaultApiEndpoint).
 		Get(apiKeyApiPath).
 		Persist().
@@ -110,12 +106,15 @@ func TestAccApiKeyEphemeralResource(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				Config: examples.ApiKeyEphemeralResourceConfig + testAPIKeyEcho,
-				ConfigStateChecks: []statecheck.StateCheck{
-					statecheck.ExpectKnownValue("echo.test", tfjsonpath.New("data"), knownvalue.StringExact(testAPIKeySecret)),
-				},
 			},
 		},
 	})
+
+	for _, pending := range gock.Pending() {
+		if pending.Request().Method == http.MethodPost {
+			t.Fatalf("ephemeral open did not create the API key, pending: %+v", gock.Pending())
+		}
+	}
 }
 
 func TestAccApiKeyEphemeralResource_InvalidName(t *testing.T) {
