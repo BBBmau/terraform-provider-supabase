@@ -29,7 +29,6 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: true
-      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
       - name: Generate and check code
         run: |
           go generate ./...
