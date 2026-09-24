@@ -4,6 +4,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,9 +15,11 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/supabase/cli/pkg/api"
 	"github.com/supabase/terraform-provider-supabase/examples"
 	"gopkg.in/h2non/gock.v1"
 )
@@ -96,9 +99,53 @@ func TestApplyVaultSecretRow(t *testing.T) {
 		t.Fatal("expected missing decrypted_secret to fail")
 	}
 
+	for _, row := range []map[string]any{
+		{"id": testVaultSecretUUID, "decrypted_secret": "sk_test_vault_value"},
+		{"id": testVaultSecretUUID, "name": nil, "decrypted_secret": "sk_test_vault_value"},
+		{"id": testVaultSecretUUID, "name": "", "decrypted_secret": "sk_test_vault_value"},
+	} {
+		if diags := applyVaultSecretRow(&data, row); !diags.HasError() {
+			t.Fatalf("expected unnamed secret to fail: %#v", row)
+		}
+	}
+
 	id, diags := vaultCreateSecretID([]map[string]any{{"create_secret": testVaultSecretUUID}})
 	if diags.HasError() || id != testVaultSecretUUID {
 		t.Fatalf("create_secret id = %s, diags = %v", id, diags)
+	}
+}
+
+func TestVaultSecretMissingProject(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := api.NewClientWithResponses(server.URL, api.WithHTTPClient(server.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, projectNotFound, diags := runDatabaseQuery(context.Background(), client, testProjectRef, readVaultSecretByIDSQL, []any{testVaultSecretUUID})
+	if diags.HasError() || !projectNotFound || rows != nil {
+		t.Fatalf("rows=%v projectNotFound=%v diags=%v", rows, projectNotFound, diags)
+	}
+	if projectNotFoundError(testProjectRef, false).HasError() {
+		t.Fatal("expected no diagnostic when the project exists")
+	}
+	if !projectNotFoundError(testProjectRef, true).HasError() {
+		t.Fatal("expected a diagnostic when the project is missing")
+	}
+
+	data := VaultSecretResourceModel{
+		ProjectRef: types.StringValue(testProjectRef),
+		Id:         types.StringValue(testVaultSecretUUID),
+	}
+	found, diags := readVaultSecretByID(context.Background(), client, &data)
+	if found || diags.HasError() {
+		t.Fatalf("found=%v diags=%v", found, diags)
 	}
 }
 

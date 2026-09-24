@@ -141,12 +141,13 @@ func (r *VaultSecretResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	rows, diags := runDatabaseQuery(ctx, r.client, data.ProjectRef.ValueString(), createVaultSecretSQL, []any{
+	rows, projectNotFound, diags := runDatabaseQuery(ctx, r.client, data.ProjectRef.ValueString(), createVaultSecretSQL, []any{
 		data.Value.ValueString(),
 		data.Name.ValueString(),
 		descriptionParam(data.Description),
 	})
 	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(projectNotFoundError(data.ProjectRef.ValueString(), projectNotFound)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -201,13 +202,14 @@ func (r *VaultSecretResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	_, diags := runDatabaseQuery(ctx, r.client, data.ProjectRef.ValueString(), updateVaultSecretSQL, []any{
+	_, projectNotFound, diags := runDatabaseQuery(ctx, r.client, data.ProjectRef.ValueString(), updateVaultSecretSQL, []any{
 		data.Id.ValueString(),
 		data.Value.ValueString(),
 		data.Name.ValueString(),
 		descriptionParam(data.Description),
 	})
 	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(projectNotFoundError(data.ProjectRef.ValueString(), projectNotFound)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -229,9 +231,16 @@ func (r *VaultSecretResource) Delete(ctx context.Context, req resource.DeleteReq
 		return
 	}
 
-	_, diags := runDatabaseQuery(ctx, r.client, data.ProjectRef.ValueString(), deleteVaultSecretSQL, []any{
+	_, projectNotFound, diags := runDatabaseQuery(ctx, r.client, data.ProjectRef.ValueString(), deleteVaultSecretSQL, []any{
 		data.Id.ValueString(),
 	})
+	if projectNotFound {
+		tflog.Trace(ctx, "project not found, vault secret already gone", map[string]any{
+			"project_ref": data.ProjectRef.ValueString(),
+			"id":          data.Id.ValueString(),
+		})
+		return
+	}
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -308,7 +317,13 @@ func readVaultSecretByName(ctx context.Context, client *api.ClientWithResponses,
 }
 
 func readVaultSecret(ctx context.Context, client *api.ClientWithResponses, data *VaultSecretResourceModel, query string, arg any) (bool, diag.Diagnostics) {
-	rows, diags := runDatabaseQuery(ctx, client, data.ProjectRef.ValueString(), query, []any{arg})
+	rows, projectNotFound, diags := runDatabaseQuery(ctx, client, data.ProjectRef.ValueString(), query, []any{arg})
+	if projectNotFound {
+		tflog.Trace(ctx, "project not found, dropping vault secret", map[string]any{
+			"project_ref": data.ProjectRef.ValueString(),
+		})
+		return false, nil
+	}
 	if diags.HasError() {
 		return false, diags
 	}
@@ -344,12 +359,16 @@ func applyVaultSecretRow(data *VaultSecretResourceModel, row map[string]any) dia
 		return diag.Diagnostics{diag.NewErrorDiagnostic("API Error", "Vault secret query did not return decrypted_secret.")}
 	}
 
-	data.Id = types.StringValue(id)
-	if name, ok := jsonString(row, "name"); ok {
-		data.Name = types.StringValue(name)
-	} else {
-		data.Name = types.StringNull()
+	name, ok := jsonString(row, "name")
+	if !ok || name == "" {
+		return diag.Diagnostics{diag.NewErrorDiagnostic(
+			"API Error",
+			"Vault secret has no name. This resource can only manage named secrets.",
+		)}
 	}
+
+	data.Id = types.StringValue(id)
+	data.Name = types.StringValue(name)
 	if description, ok := jsonString(row, "description"); ok && description != "" {
 		data.Description = types.StringValue(description)
 	} else {
@@ -385,7 +404,17 @@ func jsonString(row map[string]any, key string) (string, bool) {
 	return text, ok
 }
 
-func runDatabaseQuery(ctx context.Context, client *api.ClientWithResponses, projectRef, query string, parameters []any) ([]map[string]any, diag.Diagnostics) {
+func projectNotFoundError(projectRef string, projectNotFound bool) diag.Diagnostics {
+	if !projectNotFound {
+		return nil
+	}
+	return diag.Diagnostics{diag.NewErrorDiagnostic(
+		"API Error",
+		fmt.Sprintf("Project %q was not found.", projectRef),
+	)}
+}
+
+func runDatabaseQuery(ctx context.Context, client *api.ClientWithResponses, projectRef, query string, parameters []any) ([]map[string]any, bool, diag.Diagnostics) {
 	// V1RunQueryBody.Parameters matches POST /v1/projects/{ref}/database/query.
 	// Placeholders stay in the SQL so secret values are bound, not interpolated.
 	body := api.V1RunQueryBody{Query: query}
@@ -403,27 +432,30 @@ func runDatabaseQuery(ctx context.Context, client *api.ClientWithResponses, proj
 	httpResp, err := client.V1RunAQueryWithResponse(ctx, projectRef, body)
 	if err != nil {
 		msg := fmt.Sprintf("Unable to query project database, got error: %s", err)
-		return nil, diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
+		return nil, false, diag.Diagnostics{diag.NewErrorDiagnostic("Client Error", msg)}
 	}
 
 	switch httpResp.StatusCode() {
+	case http.StatusNotFound:
+		// A deleted project is an orphan, matching the other project-scoped resources.
+		return nil, true, nil
 	case http.StatusOK, http.StatusCreated:
 	default:
 		msg := fmt.Sprintf("Unable to query project database, got status %d: %s", httpResp.StatusCode(), truncateBody(httpResp.Body))
-		return nil, diag.Diagnostics{diag.NewErrorDiagnostic("API Error", msg)}
+		return nil, false, diag.Diagnostics{diag.NewErrorDiagnostic("API Error", msg)}
 	}
 
 	trimmed := strings.TrimSpace(string(httpResp.Body))
 	if trimmed == "" || trimmed == "null" {
-		return []map[string]any{}, nil
+		return []map[string]any{}, false, nil
 	}
 
 	var rows []map[string]any
 	if err := json.Unmarshal(httpResp.Body, &rows); err != nil {
 		msg := fmt.Sprintf("Unable to parse project database query response, got status %d: %s", httpResp.StatusCode(), truncateBody(httpResp.Body))
-		return nil, diag.Diagnostics{diag.NewErrorDiagnostic("API Error", msg)}
+		return nil, false, diag.Diagnostics{diag.NewErrorDiagnostic("API Error", msg)}
 	}
-	return rows, nil
+	return rows, false, nil
 }
 
 func truncateBody(body []byte) string {
