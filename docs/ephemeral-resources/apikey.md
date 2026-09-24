@@ -57,4 +57,6 @@ Reference the key from provider configuration, write-only arguments, or other ep
 
 The first open creates a secret API key with the configured `name` when that key does not already exist. It also creates the project's default publishable key when that key is missing. Later opens reveal the existing secret key with the same name. A configured `description` is updated when it differs from the current value.
 
+> **Warning:** Do not use this ephemeral resource and a managed `supabase_apikey` resource for the same project and name. Doing so can create duplicate keys or cause conflicting description updates. Use only one resource type to control a given key.
+
 Removing this block does not delete the key. Delete it from the Supabase dashboard when it is no longer needed.
