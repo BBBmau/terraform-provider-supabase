@@ -292,7 +292,7 @@ func handleCreateVaultSecret(w http.ResponseWriter, store *vaultSecretStore, pro
 		store.secrets[projectRef] = map[string]*vaultSecretRecord{}
 	}
 	store.secrets[projectRef][id] = &vaultSecretRecord{name: name, value: value, description: description}
-	writeJSON(w, http.StatusCreated, []map[string]any{{"id": id}})
+	writeJSON(w, []map[string]any{{"id": id}})
 }
 
 func handleUpdateVaultSecret(w http.ResponseWriter, store *vaultSecretStore, projectRef string, params []any) {
@@ -307,7 +307,7 @@ func handleUpdateVaultSecret(w http.ResponseWriter, store *vaultSecretStore, pro
 	defer store.mu.Unlock()
 	rec := store.secrets[projectRef][id]
 	if rec == nil {
-		writeJSON(w, http.StatusCreated, []map[string]any{})
+		writeJSON(w, []map[string]any{})
 		return
 	}
 	if store.nameTaken(projectRef, name, id) {
@@ -317,7 +317,7 @@ func handleUpdateVaultSecret(w http.ResponseWriter, store *vaultSecretStore, pro
 	rec.name = name
 	rec.value = value
 	rec.description = description
-	writeJSON(w, http.StatusCreated, []map[string]any{{"update_secret": ""}})
+	writeJSON(w, []map[string]any{{"update_secret": ""}})
 }
 
 func handleDeleteVaultSecret(w http.ResponseWriter, store *vaultSecretStore, projectRef string, params []any) {
@@ -330,11 +330,16 @@ func handleDeleteVaultSecret(w http.ResponseWriter, store *vaultSecretStore, pro
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	_, existed := store.secrets[projectRef][id]
 	delete(store.secrets[projectRef], id)
 	if len(store.secrets[projectRef]) == 0 {
 		delete(store.secrets, projectRef)
 	}
-	writeJSON(w, http.StatusCreated, []map[string]any{})
+	if !existed {
+		writeJSON(w, []map[string]any{})
+		return
+	}
+	writeJSON(w, []map[string]any{{"id": id}})
 }
 
 func handleReadVaultSecretByID(w http.ResponseWriter, store *vaultSecretStore, projectRef string, params []any) {
@@ -349,10 +354,10 @@ func handleReadVaultSecretByID(w http.ResponseWriter, store *vaultSecretStore, p
 	defer store.mu.Unlock()
 	rec := store.secrets[projectRef][id]
 	if rec == nil {
-		writeJSON(w, http.StatusCreated, []map[string]any{})
+		writeJSON(w, []map[string]any{})
 		return
 	}
-	writeJSON(w, http.StatusCreated, []map[string]any{vaultSecretJSON(id, rec)})
+	writeJSON(w, []map[string]any{vaultSecretJSON(id, rec)})
 }
 
 func handleReadVaultSecretByName(w http.ResponseWriter, store *vaultSecretStore, projectRef string, params []any) {
@@ -371,7 +376,7 @@ func handleReadVaultSecretByName(w http.ResponseWriter, store *vaultSecretStore,
 			rows = append(rows, vaultSecretJSON(id, rec))
 		}
 	}
-	writeJSON(w, http.StatusCreated, rows)
+	writeJSON(w, rows)
 }
 
 func (s *vaultSecretStore) nameTaken(projectRef, name, exceptID string) bool {
@@ -433,14 +438,14 @@ func queryContainsParam(query string, params []any) bool {
 	return false
 }
 
-func writeJSON(w http.ResponseWriter, status int, payload any) {
+func writeJSON(w http.ResponseWriter, payload any) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
+	w.WriteHeader(http.StatusCreated)
 	if _, err := w.Write(body); err != nil {
 		return
 	}

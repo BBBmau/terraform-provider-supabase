@@ -58,7 +58,7 @@ Refreshing compares state with `vault.decrypted_secrets`. A change made outside 
 
 ### Destroy
 
-Vault ships create and update functions only ([supabase/vault#32](https://github.com/supabase/vault/issues/32)). Destroy runs `DELETE FROM vault.secrets WHERE id = $1::uuid`. That delete leaves `pgsodium.key` in place: current Vault encrypts secrets with the shared root key, and removing that key would break other secrets.
+Vault ships create and update functions only ([supabase/vault#32](https://github.com/supabase/vault/issues/32)). Destroy runs `WITH deleted AS (DELETE FROM vault.secrets WHERE id = $1::uuid RETURNING id) SELECT id::text AS id FROM deleted`. The query endpoint returns JSON rows, and a bare `DELETE` can come back as a command tag instead. That delete leaves `pgsodium.key` in place: current Vault encrypts secrets with the shared root key, and removing that key would break other secrets.
 
 ### Statement logging
 

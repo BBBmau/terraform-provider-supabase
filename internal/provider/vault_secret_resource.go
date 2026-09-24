@@ -34,12 +34,13 @@ var (
 // Description is included because vault.create_secret and vault.update_secret accept it.
 // The CLI helper leaves description at the function default.
 const (
-	createVaultSecretSQL     = "SELECT vault.create_secret($1, $2, $3) AS id"
-	readVaultSecretByIDSQL   = "SELECT id::text AS id, name, description, decrypted_secret FROM vault.decrypted_secrets WHERE id = $1::uuid"
-	readVaultSecretByNameSQL = "SELECT id::text AS id, name, description, decrypted_secret FROM vault.decrypted_secrets WHERE name = $1"
-	updateVaultSecretSQL     = "SELECT vault.update_secret($1::uuid, $2, $3, $4)"
+	createVaultSecretSQL     = "SELECT vault.create_secret($1, $2, $3) AS id"                                                                //nolint:gosec // G101: SQL text, not a credential.
+	readVaultSecretByIDSQL   = "SELECT id::text AS id, name, description, decrypted_secret FROM vault.decrypted_secrets WHERE id = $1::uuid" //nolint:gosec // G101: SQL text, not a credential.
+	readVaultSecretByNameSQL = "SELECT id::text AS id, name, description, decrypted_secret FROM vault.decrypted_secrets WHERE name = $1"     //nolint:gosec // G101: SQL text, not a credential.
+	updateVaultSecretSQL     = "SELECT vault.update_secret($1::uuid, $2, $3, $4)"                                                            //nolint:gosec // G101: SQL text, not a credential.
 	// Vault has no delete function (https://github.com/supabase/vault/issues/32).
-	deleteVaultSecretSQL = "DELETE FROM vault.secrets WHERE id = $1::uuid"
+	// The SELECT keeps the response a JSON row array. A bare DELETE can come back as a command tag.
+	deleteVaultSecretSQL = "WITH deleted AS (DELETE FROM vault.secrets WHERE id = $1::uuid RETURNING id) SELECT id::text AS id FROM deleted" //nolint:gosec // G101: SQL text, not a credential.
 )
 
 // nullIfEmptyStringModifier stores an empty description as null so an omitted
@@ -385,6 +386,8 @@ func jsonString(row map[string]any, key string) (string, bool) {
 }
 
 func runDatabaseQuery(ctx context.Context, client *api.ClientWithResponses, projectRef, query string, parameters []any) ([]map[string]any, diag.Diagnostics) {
+	// V1RunQueryBody.Parameters matches POST /v1/projects/{ref}/database/query.
+	// Placeholders stay in the SQL so secret values are bound, not interpolated.
 	body := api.V1RunQueryBody{Query: query}
 	if len(parameters) > 0 {
 		params := append([]any{}, parameters...)
